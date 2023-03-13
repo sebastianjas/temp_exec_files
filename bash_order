@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# check if both arguments are provided
+if [ $# -ne 2 ]; then
+  echo "Usage: $0 file1.yaml file2.yaml"
+  exit 1
+fi
+
+# remove blank lines and sort YAML files
+sort_file1=$(grep -v '^[[:space:]]*$' $1 | sort)
+sort_file2=$(grep -v '^[[:space:]]*$' $2 | sort)
+
+# check if sorted files are equal
+if [ "$sort_file1" = "$sort_file2" ]; then
+  echo "Files are equal"
+else
+  # find differences
+  diff <(echo "$sort_file1") <(echo "$sort_file2")
+fi
