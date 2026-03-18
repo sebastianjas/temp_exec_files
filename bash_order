@@ -17,3 +17,114 @@ else
   # find differences
   diff <(echo "$sort_file1") <(echo "$sort_file2")
 fi
+
+
+
+____
+compare_pods.sh
+#!/bin/bash
+set -e
+
+PRE_FILE=$1
+POST_FILE=$2
+
+echo "Comparing pod states before and after upgrade..."
+
+# Check pods that changed phase
+jq -s '.[0].items as $pre | .[1].items as $post |
+      [$pre[] | {ns: .metadata.namespace, name: .metadata.name, phase: .status.phase}] as $pre_summary |
+      [$post[] | {ns: .metadata.namespace, name: .metadata.name, phase: .status.phase}] as $post_summary |
+      [$pre_summary[], $post_summary[]] | group_by(.ns + "/" + .name) | map(select(length == 2 and .[0].phase != .[1].phase))' "$PRE_FILE" "$POST_FILE" > pod_diff.json
+
+DIFF_COUNT=$(jq 'length' pod_diff.json)
+if [ "$DIFF_COUNT" -gt 0 ]; then
+  echo "Detected $DIFF_COUNT pods that changed state:"
+  jq '.' pod_diff.json
+else
+  echo "No pods changed state after upgrade. All good!"
+fi
+
+validate_pods.sh
+#!/bin/bash
+set -e
+
+OUTPUT_FILE=$1
+[ -z "$OUTPUT_FILE" ] && OUTPUT_FILE="pod_status.json"
+
+echo "Collecting pod status..."
+kubectl get pods --all-namespaces -o json > "$OUTPUT_FILE"
+
+echo "Collecting Istio version..."
+ISTIO_VERSION=$(istioctl version --remote=false | awk '/control plane/ {print $4}')
+echo "{\"istio_version\": \"$ISTIO_VERSION\"}" > istio_version.json
+
+# Simple summary for pipeline logs
+NOT_READY=$(jq -r '.items[] | select(.status.phase != "Running") | "\(.metadata.namespace)/\(.metadata.name) \(.status.phase)"' "$OUTPUT_FILE")
+if [ -n "$NOT_READY" ]; then
+  echo "Warning: Some pods are not running:"
+  echo "$NOT_READY"
+else
+  echo "All pods are running!"
+fi
+
+
+pip.yaml
+trigger:
+- main
+
+stages:
+- stage: PreUpgradeValidation
+  displayName: "Pre-upgrade validation"
+  jobs:
+  - job: ValidateBefore
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        echo "Pre-upgrade validation..."
+        ./validate_pods.sh pod_status_before.json
+      displayName: 'Validate Pods Before Upgrade'
+    - publish: pod_status_before.json
+      artifact: pod_status_before
+    - publish: istio_version.json
+      artifact: istio_version_before
+
+- stage: ManualApproval
+  displayName: "Manual Istio Upgrade"
+  dependsOn: PreUpgradeValidation
+  jobs:
+  - job: WaitForApproval
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: ManualValidation@0
+      inputs:
+        notifyUsers: '<YOUR-EMAIL-HERE>'
+        instructions: 'Check pre-upgrade results. Perform Istio upgrade. Click approve to continue.'
+        onTimeout: 'reject'
+        timeout: '43200' # 12 hours
+
+- stage: PostUpgradeValidation
+  displayName: "Post-upgrade validation"
+  dependsOn: ManualApproval
+  jobs:
+  - job: ValidateAfter
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - download: current
+      artifact: pod_status_before
+    - download: current
+      artifact: istio_version_before
+    - script: |
+        echo "Post-upgrade validation..."
+        ./validate_pods.sh pod_status_after.json
+      displayName: 'Validate Pods After Upgrade'
+    - publish: pod_status_after.json
+      artifact: pod_status_after
+    - publish: istio_version.json
+      artifact: istio_version_after
+    - script: |
+        echo "Comparing pod status before and after upgrade..."
+        ./compare_pods.sh pod_status_before.json pod_status_after.json
+      displayName: 'Compare Pod Status'
