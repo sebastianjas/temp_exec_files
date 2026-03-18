@@ -69,62 +69,29 @@ fi
 
 
 pip.yaml
-trigger:
-- main
-
 stages:
 - stage: PreUpgradeValidation
-  displayName: "Pre-upgrade validation"
   jobs:
   - job: ValidateBefore
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - script: |
-        echo "Pre-upgrade validation..."
-        ./validate_pods.sh pod_status_before.json
-      displayName: 'Validate Pods Before Upgrade'
-    - publish: pod_status_before.json
-      artifact: pod_status_before
-    - publish: istio_version.json
-      artifact: istio_version_before
 
-- stage: ManualApproval
-  displayName: "Manual Istio Upgrade"
-  dependsOn: PreUpgradeValidation
-  jobs:
-  - job: WaitForApproval
-    pool:
-      vmImage: 'ubuntu-latest'
-    steps:
-    - task: ManualValidation@0
+    - task: Kubernetes@1
+      displayName: "Connect to cluster"
       inputs:
-        notifyUsers: '<YOUR-EMAIL-HERE>'
-        instructions: 'Check pre-upgrade results. Perform Istio upgrade. Click approve to continue.'
-        onTimeout: 'reject'
-        timeout: '43200' # 12 hours
+        connectionType: 'Kubernetes Service Connection'
+        kubernetesServiceEndpoint: 'K8S-CONNECTION'
+        command: 'login'
 
-- stage: PostUpgradeValidation
-  displayName: "Post-upgrade validation"
-  dependsOn: ManualApproval
-  jobs:
-  - job: ValidateAfter
-    pool:
-      vmImage: 'ubuntu-latest'
-    steps:
-    - download: current
-      artifact: pod_status_before
-    - download: current
-      artifact: istio_version_before
     - script: |
-        echo "Post-upgrade validation..."
-        ./validate_pods.sh pod_status_after.json
-      displayName: 'Validate Pods After Upgrade'
-    - publish: pod_status_after.json
-      artifact: pod_status_after
-    - publish: istio_version.json
-      artifact: istio_version_after
-    - script: |
-        echo "Comparing pod status before and after upgrade..."
-        ./compare_pods.sh pod_status_before.json pod_status_after.json
-      displayName: 'Compare Pod Status'
+        echo "Installing istioctl..."
+        curl -L https://istio.io/downloadIstio | sh -
+        export PATH=$PWD/istio-*/bin:$PATH
+
+        echo "Running pre-validation..."
+        ./validate_pods.sh pod_status_before.json
+      displayName: "Pre-validation"
+
+    - publish: pod_status_before.json
+      artifact: before
